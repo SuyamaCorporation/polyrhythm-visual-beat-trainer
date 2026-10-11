@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Polyrhythm Visual Beat Trainer</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen p-4">
+<div class="max-w-2xl mx-auto">
+  <h1 class="text-2xl font-bold text-center text-pink-400 mb-1">Polyrhythm Beat Trainer</h1>
+  <p class="text-center text-gray-400 text-sm mb-4">Visual & audio polyrhythm practice</p>
+
+  <!-- Controls -->
+  <div class="bg-gray-800 rounded-xl p-4 mb-4">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-3">
+      <div>
+        <label class="text-xs text-pink-300 block mb-1">Track A beats: <span id="a-val" class="font-bold">3</span></label>
+        <input type="range" id="track-a" min="2" max="12" value="3" class="w-full">
+      </div>
+      <div>
+        <label class="text-xs text-blue-300 block mb-1">Track B beats: <span id="b-val" class="font-bold">2</span></label>
+        <input type="range" id="track-b" min="2" max="12" value="2" class="w-full">
+      </div>
+      <div>
+        <label class="text-xs text-gray-300 block mb-1">BPM: <span id="bpm-val" class="font-bold">80</span></label>
+        <input type="range" id="bpm-slider" min="40" max="200" value="80" class="w-full">
+      </div>
+      <div class="flex flex-col gap-2 justify-center">
+        <button id="btn-toggle" class="bg-pink-800 hover:bg-pink-700 px-4 py-2 rounded text-sm font-semibold">▶ Start</button>
+      </div>
+    </div>
+    <!-- Presets -->
+    <div class="flex flex-wrap gap-2 items-center">
+      <span class="text-xs text-gray-400">Presets:</span>
+      <button class="poly-preset text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded" data-a="2" data-b="3">2:3</button>
+      <button class="poly-preset text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded" data-a="3" data-b="4">3:4</button>
+      <button class="poly-preset text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded" data-a="3" data-b="5">3:5</button>
+      <button class="poly-preset text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded" data-a="4" data-b="5">4:5</button>
+      <button class="poly-preset text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded" data-a="3" data-b="2">3:2 (clave)</button>
+      <button class="poly-preset text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded" data-a="5" data-b="4">5:4</button>
+    </div>
+  </div>
+
+  <!-- Canvas -->
+  <div class="bg-gray-900 rounded-xl p-4 flex justify-center mb-4">
+    <canvas id="canvas" width="400" height="400" class="rounded"></canvas>
+  </div>
+
+  <!-- Tap Practice -->
+  <div class="bg-gray-800 rounded-xl p-4 mb-4">
+    <h2 class="text-sm font-bold text-gray-300 mb-2">Tap Practice (Space bar or button)</h2>
+    <div class="flex gap-3 items-center mb-2">
+      <select id="tap-track" class="bg-gray-700 text-white rounded px-2 py-1 text-sm">
+        <option value="A">Tap Track A</option>
+        <option value="B">Tap Track B</option>
+      </select>
+      <button id="btn-tap" class="bg-pink-800 hover:bg-pink-700 px-6 py-3 rounded text-sm font-bold flex-1 md:flex-none">TAP</button>
+      <button id="btn-reset-tap" class="bg-gray-700 hover:bg-gray-600 px-3 py-2 rounded text-xs">Reset</button>
+    </div>
+    <div class="grid grid-cols-2 gap-3 text-sm text-center">
+      <div class="bg-gray-900 rounded p-2">
+        <div class="text-xs text-gray-400">Total Taps</div>
+        <div id="tap-count" class="text-xl font-bold text-pink-400">0</div>
+      </div>
+      <div class="bg-gray-900 rounded p-2">
+        <div class="text-xs text-gray-400">Avg Accuracy</div>
+        <div id="tap-accuracy" class="text-xl font-bold text-green-400">–</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const CX = 200, CY = 200;
+const R_A = 160, R_B = 100;
+const DOT_R = 8;
+
+let audioCtx = null;
+let running = false;
+let animId = null;
+let startTime = null;
+let cycleMs = 2000;
+let lastBeatA = -1, lastBeatB = -1;
+
+let tapCount = 0, tapErrors = [];
+let tapTimes = [];
+
+function getA() { return parseInt(document.getElementById('track-a').value); }
+function getB() { return parseInt(document.getElementById('track-b').value); }
+function getBPM() { return parseInt(document.getElementById('bpm-slider').value); }
+
+function computeCycleMs() {
+  // One full cycle = LCM(A,B) beats at current BPM
+  const a = getA(), b = getB();
+  const g = gcd(a,b), l = a*b/g;
+  const beatMs = 60000 / getBPM();
+  return l * beatMs;
+}
+
+function gcd(a,b) { return b===0?a:gcd(b,a%b); }
+
+function playClick(freq, time) {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.frequency.value = freq;
+  osc.type = 'square';
+  gain.gain.setValueAtTime(0.3, time);
+  gain.gain.exponentialRampToValueAtTime(0.001, time + 0.05);
+  osc.start(time);
+  osc.stop(time + 0.1);
+}
+
+function draw() {
+  const now = performance.now();
+  const a = getA(), b = getB();
+
+  ctx.clearRect(0, 0, 400, 400);
+  ctx.fillStyle = '#070712';
+  ctx.fillRect(0, 0, 400, 400);
+
+  if (!running || startTime === null) {
+    // Static preview
+    drawTrack(a, R_A, '#ec4899', -1, a);
+    drawTrack(b, R_B, '#60a5fa', -1, b);
+    ctx.fillStyle = '#555';
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Press Start to begin', CX, CY);
+    return;
+  }
+
+  const elapsed = (now - startTime) % cycleMs;
+  const tA = elapsed / cycleMs * a;
+  const tB = elapsed / cycleMs * b;
+  const curBeatA = Math.floor(tA);
+  const curBeatB = Math.floor(tB);
+
+  // Audio triggers
+  if (curBeatA !== lastBeatA) {
+    if (audioCtx) playClick(880, audioCtx.currentTime + 0.001);
+    lastBeatA = curBeatA;
+  }
+  if (curBeatB !== lastBeatB) {
+    if (audioCtx) playClick(220, audioCtx.currentTime + 0.001);
+    lastBeatB = curBeatB;
+  }
+
+  drawTrack(a, R_A, '#ec4899', tA % 1, a);
+  drawTrack(b, R_B, '#60a5fa', tB % 1, b);
+
+  // Center label
+  ctx.fillStyle = '#ddd';
+  ctx.font = 'bold 24px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(`${a}:${b}`, CX, CY-8);
+  ctx.font = '12px sans-serif';
+  ctx.fillStyle = '#888';
+  ctx.fillText(`${getBPM()} BPM`, CX, CY+16);
+
+  if (running) animId = requestAnimationFrame(draw);
+}
+
+function drawTrack(beats, radius, color, progress, totalBeats) {
+  // Draw circle
+  ctx.beginPath();
+  ctx.arc(CX, CY, radius, 0, Math.PI*2);
+  ctx.strokeStyle = color+'33';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Beat dots
+  for (let i = 0; i < beats; i++) {
+    const angle = (i/beats)*Math.PI*2 - Math.PI/2;
+    const x = CX + radius*Math.cos(angle);
+    const y = CY + radius*Math.sin(angle);
+    const isCurrent = progress >= 0 && Math.abs(progress - i/beats*beats%1) < 0.15 ||
+                      (progress >= 0 && Math.floor(progress) === i && progress%1 < 0.15);
+    ctx.beginPath();
+    ctx.arc(x, y, isCurrent ? DOT_R+3 : DOT_R, 0, Math.PI*2);
+    ctx.fillStyle = Math.floor(progress) === i && progress >= 0 ? color : color+'66';
+    ctx.fill();
+    // Beat number
+    ctx.fillStyle = '#fff';
+    ctx.font = '8px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(i+1, x, y);
+  }
+
+  // Rotating indicator
+  if (progress >= 0) {
+    const angle = (progress/beats)*Math.PI*2 - Math.PI/2;
+    const x = CX + radius*Math.cos(angle);
+    const y = CY + radius*Math.sin(angle);
+    ctx.beginPath();
+    ctx.arc(x, y, DOT_R+5, 0, Math.PI*2);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+  }
+}
+
+document.getElementById('btn-toggle').addEventListener('click', () => {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  running = !running;
+  document.getElementById('btn-toggle').textContent = running ? '⏹ Stop' : '▶ Start';
+  if (running) {
+    startTime = performance.now();
+    cycleMs = computeCycleMs();
+    lastBeatA = lastBeatB = -1;
+    animId = requestAnimationFrame(draw);
+  } else {
+    cancelAnimationFrame(animId);
+    draw();
+  }
+});
+
+['track-a','track-b','bpm-slider'].forEach(id => {
+  document.getElementById(id).addEventListener('input', () => {
+    const a = getA(), b = getB();
+    document.getElementById('a-val').textContent = a;
+    document.getElementById('b-val').textContent = b;
+    document.getElementById('bpm-val').textContent = getBPM();
+    if (running) { startTime = performance.now(); cycleMs = computeCycleMs(); lastBeatA=lastBeatB=-1; }
+  });
+});
+
+document.querySelectorAll('.poly-preset').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.getElementById('track-a').value = btn.dataset.a;
+    document.getElementById('track-b').value = btn.dataset.b;
+    document.getElementById('a-val').textContent = btn.dataset.a;
+    document.getElementById('b-val').textContent = btn.dataset.b;
+    if (running) { startTime = performance.now(); cycleMs = computeCycleMs(); lastBeatA=lastBeatB=-1; }
+  });
+});
+
+// Tap practice
+function handleTap() {
+  if (!running) return;
+  const now = performance.now();
+  tapTimes.push(now);
+  tapCount++;
+  document.getElementById('tap-count').textContent = tapCount;
+
+  const track = document.getElementById('tap-track').value;
+  const beats = track === 'A' ? getA() : getB();
+  const elapsed = (now - startTime) % cycleMs;
+  const beatMs = cycleMs / beats;
+  const nearestBeat = Math.round(elapsed / beatMs) * beatMs;
+  const error = Math.abs(elapsed - nearestBeat);
+  const maxError = beatMs * 0.5;
+  const accuracy = Math.max(0, 1 - error/maxError) * 100;
+  tapErrors.push(accuracy);
+  const avg = tapErrors.reduce((a,b)=>a+b,0)/tapErrors.length;
+  document.getElementById('tap-accuracy').textContent = avg.toFixed(0)+'%';
+}
+
+document.getElementById('btn-tap').addEventListener('click', handleTap);
+document.addEventListener('keydown', e => { if (e.code === 'Space' && !e.repeat) { e.preventDefault(); handleTap(); }});
+document.getElementById('btn-reset-tap').addEventListener('click', () => {
+  tapCount=0; tapErrors=[]; tapTimes=[];
+  document.getElementById('tap-count').textContent = '0';
+  document.getElementById('tap-accuracy').textContent = '–';
+});
+
+draw();
+</script>
+</body>
+</html>
